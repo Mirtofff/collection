@@ -58,7 +58,7 @@
 
   .item-row { display: flex; align-items: center; gap: 10px; padding: 10px 8px; margin: 2px 0; border-radius: 7px;
     cursor: pointer; background: transparent; transition: background 0.15s ease; min-height: 24px; }
-  .item-row:active { background: rgba(255,255,255,0.04); }
+  .item-row:not(.checked):not(.repair):not(.child-repair):active { background: rgba(255,255,255,0.04); }
   .item-row.checked { background: var(--checked-bg); }
   .item-row.repair { background: var(--danger); }
   .item-row.child-repair { background: var(--warn); }
@@ -222,7 +222,7 @@
   .chevron { border-color: var(--gold); }
 
   .item-row { border-radius: 2px; border-left: 2px solid transparent; }
-  .item-row:hover { background: rgba(var(--accent-rgb),0.07); }
+  @media (hover: hover) { .item-row:not(.checked):not(.repair):not(.child-repair):hover { background: rgba(var(--accent-rgb),0.07); } }
   .item-row.checked { border-left-color: #5d8f10; }
   .item-row.repair { background: repeating-linear-gradient(135deg, #8f1d2c 0 10px, #7c1624 10px 20px); }
   .box { border-radius: 2px; border-color: var(--gold); }
