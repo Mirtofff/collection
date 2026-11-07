@@ -312,6 +312,8 @@
     <p style="font-size:13px;margin:6px 0">Данные хранятся в приватном GitHub Gist. Создай токен: GitHub &rarr; Settings &rarr; Developer settings &rarr; Personal access tokens &rarr; Tokens (classic), галочка <b>gist</b>. Токен сохраняется только в этом браузере, поэтому на каждом устройстве его нужно ввести один раз.</p>
     <input id="syncToken" class="search-input" type="password" placeholder="Токен GitHub (ghp_...)" autocomplete="off">
     <input id="syncGistId" class="search-input" type="text" placeholder="Gist ID (необязательно — найдётся автоматически)" style="margin-top:6px">
+    <p style="font-size:13px;margin:10px 0 4px">Или хранить данные в приватном репозитории GitHub: укажи его и токен с правом <b>Contents: Read and write</b> только на этот репозиторий (файл collection.json).</p>
+    <input id="syncRepo" class="search-input" type="text" placeholder="Репозиторий: владелец/имя (если указан — Gist не используется)" autocomplete="off">
     <div class="save-row">
       <button id="syncConnectBtn" class="save-now-btn">Подключить</button>
       <button id="syncNowBtn" class="reset-btn export-btn">Синхронизировать сейчас</button>
@@ -528,14 +530,14 @@ async function loadState() {
           migrateFlags(repaired);
           state = { root: repaired, savedAt: parsed.savedAt || 0 };
           if (!DB && !HAS_CLAUDE_STORAGE && HAS_LOCAL_STORAGE) {
-            loadWarning = syncCfg && syncCfg.gistId ? '' : 'Данные сохраняются в этом браузере. Чтобы они были и на других устройствах, подключите «Синхронизацию».';
+            loadWarning = syncOn() ? '' : 'Данные сохраняются в этом браузере. Чтобы они были и на других устройствах, подключите «Синхронизацию».';
           }
           return;
         }
       }
       loadWarning = 'Сохранённые данные были в неожиданном формате — загружен исходный список.';
     } else if (!DB && !HAS_CLAUDE_STORAGE && HAS_LOCAL_STORAGE) {
-      loadWarning = syncCfg && syncCfg.gistId ? '' : 'Данные сохраняются в этом браузере. Чтобы они были и на других устройствах, подключите «Синхронизацию».';
+      loadWarning = syncOn() ? '' : 'Данные сохраняются в этом браузере. Чтобы они были и на других устройствах, подключите «Синхронизацию».';
     }
   } catch (e) {
     loadFailed = !!DB;
@@ -621,8 +623,9 @@ function serializeState() { state.savedAt = Date.now(); return JSON.stringify(st
 
 // ---- sync via private GitHub Gist ----
 const SYNC_KEY = 'gpu-rog-sync-v1', GIST_FILE = 'collection.json';
-let syncCfg = null, syncBusy = false, pushTimer = null;
+let syncCfg = null, syncBusy = false, pushTimer = null, repoSha = null;
 try { const r = window.localStorage.getItem(SYNC_KEY); syncCfg = r ? JSON.parse(r) : null; } catch (e) { syncCfg = null; }
+function syncOn() { return !!(syncCfg && (syncCfg.repo || syncCfg.gistId)); }
 function saveSyncCfg() {
   try { if (syncCfg) window.localStorage.setItem(SYNC_KEY, JSON.stringify(syncCfg)); else window.localStorage.removeItem(SYNC_KEY); } catch (e) {}
 }
@@ -634,7 +637,7 @@ async function gh(path, method, body) {
   const headers = { 'Accept': 'application/vnd.github+json', 'Authorization': 'Bearer ' + syncCfg.token };
   if (body) headers['Content-Type'] = 'application/json';
   const res = await fetch('https://api.github.com' + path, { method: method || 'GET', headers: headers, body: body ? JSON.stringify(body) : undefined });
-  if (!res.ok) throw new Error('GitHub ' + res.status + (res.status === 401 ? ' (неверный токен)' : res.status === 404 ? ' (Gist не найден)' : ''));
+  if (!res.ok) throw new Error('GitHub ' + res.status + (res.status === 401 ? ' (неверный токен)' : res.status === 404 ? (syncCfg.repo ? ' (репозиторий или файл не найден; проверь имя и права токена)' : ' (Gist не найден)') : ''));
   return res.json();
 }
 async function gistRead(id) {
@@ -655,10 +658,38 @@ async function gistPush() {
     syncCfg.gistId = r.id; saveSyncCfg();
   }
 }
+// ---- sync via private GitHub repository (Contents API) ----
+function b64enc(str) { const b = new TextEncoder().encode(str); let s = ''; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(s); }
+function b64dec(b64) { const s = atob(b64.replace(/\s/g, '')); const b = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i); return new TextDecoder().decode(b); }
+function repoUrl() { return '/repos/' + syncCfg.repo.split('/').map(encodeURIComponent).join('/') + '/contents/' + encodeURIComponent(GIST_FILE); }
+async function repoRead() {
+  const headers = { 'Accept': 'application/vnd.github+json', 'Authorization': 'Bearer ' + syncCfg.token };
+  const res = await fetch('https://api.github.com' + repoUrl() + '?t=' + Date.now(), { headers: headers, cache: 'no-store' });
+  if (res.status === 404) {
+    // file missing is fine (first push), but a bad repo name / token must still fail loudly
+    const rr = await fetch('https://api.github.com/repos/' + syncCfg.repo.split('/').map(encodeURIComponent).join('/'), { headers: headers });
+    if (!rr.ok) throw new Error('GitHub ' + rr.status + ' (репозиторий не найден; проверь имя и права токена)');
+    repoSha = null; return null;
+  }
+  if (!res.ok) throw new Error('GitHub ' + res.status + (res.status === 401 ? ' (неверный токен)' : ''));
+  const j = await res.json();
+  if (!j.content) throw new Error('файл слишком большой для Contents API');
+  repoSha = j.sha;
+  const o = JSON.parse(b64dec(j.content));
+  return (o && o.root) ? o : null;
+}
+async function repoPush() {
+  const body = { message: 'Collection data ' + new Date().toISOString(), content: b64enc(JSON.stringify(gistPayload())) };
+  if (repoSha) body.sha = repoSha;
+  const r = await gh(repoUrl(), 'PUT', body);
+  repoSha = r && r.content ? r.content.sha : null;
+}
+async function remoteRead() { return syncCfg.repo ? repoRead() : gistRead(syncCfg.gistId); }
+async function remotePush() { return syncCfg.repo ? repoPush() : gistPush(); }
 async function adoptRemote(remote) {
   try { await makeBackup(true); } catch (e) {}
   const repaired = sanitizeNode(remote.root, 0);
-  if (!repaired) throw new Error('неверный формат данных в Gist');
+  if (!repaired) throw new Error('неверный формат данных в облаке');
   migrateFlags(repaired);
   state = { root: repaired, savedAt: remote.savedAt || 0 };
   resetTransientFlags(state.root);
@@ -666,27 +697,37 @@ async function adoptRemote(remote) {
   render();
 }
 async function syncNow(preferRemote) {
-  if (!syncCfg || !syncCfg.gistId || syncBusy || loadFailed) return;
+  if (!syncOn() || syncBusy || loadFailed) return;
   syncBusy = true;
   try {
     setSyncStatus('Синхронизация…');
-    const remote = await gistRead(syncCfg.gistId);
+    const remote = await remoteRead();
     const ls = state.savedAt || 0, rs = remote ? (remote.savedAt || 0) : 0;
     if (remote && (preferRemote || rs > ls)) { await adoptRemote(remote); setSyncStatus('\u2713 Загружено из облака (' + fmtDate(rs) + ')', 'ok'); }
-    else if (!remote || ls > rs) { if (!state.savedAt) state.savedAt = Date.now(); await gistPush(); setSyncStatus('\u2713 Отправлено в облако в ' + fmtDate(Date.now()), 'ok'); }
+    else if (!remote || ls > rs) { if (!state.savedAt) state.savedAt = Date.now(); await remotePush(); setSyncStatus('\u2713 Отправлено в облако в ' + fmtDate(Date.now()), 'ok'); }
     else setSyncStatus('\u2713 Синхронизировано, изменений нет', 'ok');
   } catch (e) { setSyncStatus('\u2717 Ошибка синхронизации: ' + (e && e.message ? e.message : e), 'err'); }
   syncBusy = false;
 }
 function schedulePush() {
-  if (!syncCfg || !syncCfg.gistId) return;
+  if (!syncOn()) return;
   clearTimeout(pushTimer);
   pushTimer = setTimeout(() => syncNow(), 2500);
 }
-async function syncConnect(token, gistIdInput) {
+async function syncConnect(token, gistIdInput, repoInput) {
+  const repo = (repoInput || '').trim().replace(/^https?:\/\/github\.com\//, '').replace(/\.git$/, '').replace(/\/+$/, '');
+  if (repo && !/^[\w.-]+\/[\w.-]+$/.test(repo)) { setSyncStatus('\u2717 Репозиторий укажи как владелец/имя', 'err'); return; }
   syncCfg = { token: token.trim(), gistId: (gistIdInput || '').trim() };
+  if (repo) { syncCfg.repo = repo; syncCfg.gistId = ''; }
   try {
     setSyncStatus('Подключаюсь…');
+    if (syncCfg.repo) {
+      const remote = await repoRead();
+      saveSyncCfg();
+      if (remote) await syncNow(true);
+      else { state.savedAt = state.savedAt || Date.now(); await repoPush(); setSyncStatus('\u2713 Данные отправлены в репозиторий', 'ok'); }
+      refreshSyncUi(); return;
+    }
     let existing = !!syncCfg.gistId;
     if (!syncCfg.gistId) {
       const list = await gh('/gists?per_page=100');
@@ -699,9 +740,9 @@ async function syncConnect(token, gistIdInput) {
   } catch (e) { syncCfg = null; saveSyncCfg(); setSyncStatus('\u2717 Не удалось подключиться: ' + (e && e.message ? e.message : e), 'err'); }
 }
 function refreshSyncUi() {
-  const c = !!(syncCfg && syncCfg.gistId);
+  const c = syncOn();
   const info = document.getElementById('syncInfo');
-  if (info) info.textContent = c ? 'Подключено. Gist ID: ' + syncCfg.gistId + ' (на другом устройстве введи токен и этот ID, либо только токен)' : 'Не подключено.';
+  if (info) info.textContent = c ? (syncCfg.repo ? 'Подключено. Репозиторий: ' + syncCfg.repo + ' (на другом устройстве введи токен и это имя)' : 'Подключено. Gist ID: ' + syncCfg.gistId + ' (на другом устройстве введи токен и этот ID, либо только токен)') : 'Не подключено.';
   const dis = document.getElementById('syncOffBtn'); if (dis) dis.style.display = c ? '' : 'none';
   const now = document.getElementById('syncNowBtn'); if (now) now.style.display = c ? '' : 'none';
 }
@@ -711,14 +752,14 @@ function wireSync() {
   document.getElementById('syncConnectBtn').addEventListener('click', () => {
     const t = document.getElementById('syncToken').value;
     if (!t.trim() && !(syncCfg && syncCfg.token)) { setSyncStatus('\u2717 Вставь токен GitHub', 'err'); return; }
-    syncConnect(t.trim() ? t : syncCfg.token, document.getElementById('syncGistId').value);
+    syncConnect(t.trim() ? t : syncCfg.token, document.getElementById('syncGistId').value, document.getElementById('syncRepo').value);
     document.getElementById('syncToken').value = '';
   });
   document.getElementById('syncNowBtn').addEventListener('click', () => syncNow());
   document.getElementById('syncOffBtn').addEventListener('click', () => { syncCfg = null; saveSyncCfg(); setSyncStatus('Синхронизация отключена (данные в облаке остались)'); refreshSyncUi(); });
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') syncNow(); });
   refreshSyncUi();
-  if (syncCfg && syncCfg.gistId) syncNow();
+  if (syncOn()) syncNow();
 }
 
 async function saveState() {
