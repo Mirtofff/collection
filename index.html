@@ -329,7 +329,6 @@
       <button id="backupNowBtn" class="reset-btn export-btn">Создать копию сейчас</button>
       <button id="exportBtn" class="reset-btn export-btn">&#128190;&#8594; Экспорт данных</button>
       <button id="mergeBtn" class="reset-btn export-btn">&#10133; Подтянуть новое из эталона</button>
-      <button id="resetBtn" class="reset-btn">&#8635; Сбросить к эталону</button>
     </div>
   <div id="backupPanel" class="backup-panel" style="display:none"></div>
   <textarea id="exportArea" class="export-area" readonly></textarea>
@@ -1618,34 +1617,6 @@ function wireMergeButton() {
   });
 }
 
-function wireResetButton() {
-  const btn = document.getElementById('resetBtn');
-  const defaultLabel = btn.textContent;
-  let armed = false, timer = null;
-  btn.addEventListener('click', async () => {
-    if (!armed) {
-      armed = true;
-      btn.textContent = 'Точно сбросить? Нажми ещё раз';
-      btn.classList.add('armed');
-      timer = setTimeout(() => { armed = false; btn.textContent = defaultLabel; btn.classList.remove('armed'); }, 3000);
-      return;
-    }
-    clearTimeout(timer);
-    armed = false;
-    btn.textContent = defaultLabel;
-    btn.classList.remove('armed');
-
-    try { await makeBackup(true); } catch (e) {}
-    loadWarning = '';
-    state = { root: sanitizeNode(defaultTree, 0) };
-    state.root.open = true;
-    state.root.children.forEach((n, i) => { if (i === 0) n.open = true; });
-    resetTransientFlags(state.root);
-    render();
-    await manualSave();
-  });
-}
-
 function wireSearch() {
   const input = document.getElementById('searchInput');
   input.addEventListener('input', () => {
@@ -1711,7 +1682,6 @@ function wireImportButton() {
   resetTransientFlags(state.root);
   render();
   document.getElementById('saveNowBtn').addEventListener('click', manualSave);
-  wireResetButton();
   wireExportButton();
   wireSearch();
   wireFilters();
