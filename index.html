@@ -637,7 +637,7 @@ async function gh(path, method, body) {
   const headers = { 'Accept': 'application/vnd.github+json', 'Authorization': 'Bearer ' + syncCfg.token };
   if (body) headers['Content-Type'] = 'application/json';
   const res = await fetch('https://api.github.com' + path, { method: method || 'GET', headers: headers, body: body ? JSON.stringify(body) : undefined });
-  if (!res.ok) throw new Error('GitHub ' + res.status + (res.status === 401 ? ' (неверный токен)' : res.status === 404 ? (syncCfg.repo ? ' (репозиторий или файл не найден; проверь имя и права токена)' : ' (Gist не найден)') : ''));
+  if (!res.ok) throw new Error('GitHub ' + res.status + (res.status === 401 ? ' (неверный токен)' : res.status === 403 && syncCfg.repo ? ' (нет прав: у токена должно быть Contents: Read and write именно на этот репозиторий)' : res.status === 404 ? (syncCfg.repo ? ' (репозиторий или файл не найден; проверь имя и права токена)' : ' (Gist не найден)') : ''));
   return res.json();
 }
 async function gistRead(id) {
@@ -671,7 +671,7 @@ async function repoRead() {
     if (!rr.ok) throw new Error('GitHub ' + rr.status + ' (репозиторий не найден; проверь имя и права токена)');
     repoSha = null; return null;
   }
-  if (!res.ok) throw new Error('GitHub ' + res.status + (res.status === 401 ? ' (неверный токен)' : ''));
+  if (!res.ok) throw new Error('GitHub ' + res.status + (res.status === 401 ? ' (неверный токен)' : res.status === 403 ? ' (нет прав: у токена должно быть Contents: Read and write именно на этот репозиторий)' : ''));
   const j = await res.json();
   if (!j.content) throw new Error('файл слишком большой для Contents API');
   repoSha = j.sha;
